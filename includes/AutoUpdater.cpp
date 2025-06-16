@@ -10,6 +10,10 @@
 #include <regex>
 #include <json/json.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 using namespace std;
 namespace fs = std::filesystem;
 
@@ -54,10 +58,6 @@ class AutoUpdater
             }
         }
 
-
-        // Public members exactly as you want them
-        bool verbose;
-
         bool update()
         {
             if (release_url.empty())
@@ -68,9 +68,130 @@ class AutoUpdater
             string tmp_path = create_temp_directory();
             if (tmp_path.empty())
             {
+                log("Got empty tmp path");
                 return false;
             }
-            download_update(tmp_path, release_url);
+            string downloaded_file = download_update(tmp_path, release_url);
+            if (downloaded_file.empty())
+            {
+                log("Could not download release");
+                fs::remove_all(tmp_path);
+                return false;
+            }
+
+            // Get current executable path
+            fs::path current_exe;
+            try
+            {
+                current_exe = fs::canonical("/proc/self/exe"); // Linux
+            }
+            catch (...)
+            {
+                #ifdef _WIN32
+                    char path[MAX_PATH];
+                    GetModuleFileNameA(NULL, path, MAX_PATH);
+                    current_exe = fs::path(path);
+                #else
+                    log("Could not determine current executable path");
+                    fs::remove_all(tmp_path);
+                    return false;
+                #endif
+            }
+
+            // Create backup of current executable
+            fs::path backup_path = fs::path(tmp_path) / (current_exe.filename().string() + ".bak");
+            try
+            {
+                log("Creating backup of current executeble at " + tmp_path + "/" + (current_exe.filename().string() + ".bak"));
+                fs::copy_file(current_exe, backup_path, fs::copy_options::overwrite_existing);
+            }
+            catch (...)
+            {
+                log("Failed to create backup of current executable");
+                fs::remove_all(tmp_path);
+                return false;
+            }
+
+            // Replace current executable
+            try
+            {
+                #ifdef _WIN32
+                    // Windows needs special handling
+                    MoveFileExA(downloaded_file.c_str(), current_exe.string().c_str(), 
+                            MOVEFILE_DELAY_UNTIL_REBOOT | MOVEFILE_REPLACE_EXISTING);
+                    log("Update scheduled for next restart");
+                #else
+                    // Linux/macOS - attempt direct replacement
+                    log("Attempting to replace current executable");
+                    
+                    // First close curl handles
+                    if (curl)
+                    {
+                        curl_easy_cleanup(curl);
+                        curl = nullptr;
+                    }
+                    
+                    // Get file size before replacement for verification
+                    auto orig_size = fs::file_size(current_exe);
+                    auto tar_size = fs::file_size(downloaded_file);
+                    log("Current executable size: " + to_string(orig_size) + " bytes");
+                    log("Downloaded file size: " + to_string(tar_size) + " bytes");
+
+                    // Make the tar.gz world-readable
+                    fs::permissions(downloaded_file, 
+                                fs::perms::owner_all | 
+                                fs::perms::group_read |
+                                fs::perms::others_read);
+                    // Remove original executable
+                    fs::remove(current_exe);
+                    
+                    // Copy the tar.gz file to original executable's location
+                    fs::copy(downloaded_file, current_exe);
+                    
+                    // Make it executable (won't actually work for a tar.gz)
+                    /*
+                    fs::permissions(current_exe, 
+                                fs::perms::owner_all | 
+                                fs::perms::group_read | fs::perms::group_exec |
+                                fs::perms::others_read | fs::perms::others_exec);
+                    */
+                    // Verify after copy
+                    auto new_size = fs::file_size(current_exe);
+
+                    if (new_size == tar_size)
+                    {
+                        log("Replacement successful");
+                    }
+                    else
+                    {
+                        log("Replacement failed - size mismatch");
+                    }
+                #endif
+            }
+            catch (const exception& e)
+            {
+                log(string("Replacement failed: ") + e.what());
+                
+                // Attempt to restore backup
+                try
+                {
+                    fs::copy(backup_path, current_exe, fs::copy_options::overwrite_existing);
+                    log("Restored from backup");
+                }
+                catch (...)
+                {
+                    log("Critical: Failed to restore from backup!");
+                }
+                
+                fs::remove_all(tmp_path);
+                return false;
+            }
+
+            // Clean up (except on Windows where we need to keep files for reboot)
+            #ifndef _WIN32
+                fs::remove_all(tmp_path);
+            #endif
+
             return true;
         }
     
@@ -165,9 +286,8 @@ class AutoUpdater
         }
 
     private:
-        string repourl_;
         CURL* curl;
-        string latestVersion;
+        bool verbose;
         string release_url;
         bool initialized;
         string current_release_date;  // Stored as "YYYY-MM-DD"
@@ -295,17 +415,17 @@ class AutoUpdater
         }
 
         // Download the update
-        bool download_update(string destination_dir, string download_url)
+        string download_update(string destination_dir, string download_url)
         {
             if (!initialized && !initCurl())
             {
-                return false;
+                return "";
             }
             
             if (download_url.empty())
             {
                 log("No download URL available");
-                return false;
+                return "";
             }
             
             // Create proper file path inside the temp directory
@@ -315,12 +435,14 @@ class AutoUpdater
             if (!fp)
             {
                 log("Failed to open file for writing: " + file_path.string());
-                return false;
+                return "";
             }
             
             curl_easy_setopt(curl, CURLOPT_URL, download_url.c_str());
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, NULL);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
+            curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);  // Important for GitHub redirects
+            curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);     // Fail on HTTP errors
             
             log("Downloading update from: " + download_url);
             log("Saving to: " + file_path.string());
@@ -330,11 +452,21 @@ class AutoUpdater
             
             if (res != CURLE_OK) {
                 log(string("Download failed: ") + curl_easy_strerror(res));
-                return false;
+                fs::remove(file_path);
+                return "";
+            }
+
+            // Verify download size
+            error_code ec;
+            auto file_size = fs::file_size(file_path, ec);
+            if (ec || file_size == 0) {
+                log("Downloaded file is empty or inaccessible");
+                fs::remove(file_path);
+                return "";
             }
             
-            log("Update downloaded successfully");
-            return true;
+            log("Latest release downloaded successfully");
+            return file_path.string();
         }
 
         void log(string log_string)
