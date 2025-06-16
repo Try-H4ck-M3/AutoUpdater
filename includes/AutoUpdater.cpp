@@ -295,6 +295,67 @@ class AutoUpdater
         string github_repo_name;
         string asset_name;
 
+        chrono::time_point<chrono::steady_clock> last_progress_update;
+        static constexpr chrono::milliseconds progress_update_interval{100};
+
+        // Progress callback as a static member function
+        static int progress_callback(void* clientp, 
+                                curl_off_t dltotal, 
+                                curl_off_t dlnow, 
+                                curl_off_t ultotal, 
+                                curl_off_t ulnow)
+        {
+            AutoUpdater* self = static_cast<AutoUpdater*>(clientp);
+            if (self && self->verbose && dltotal > 0) {
+                const int bar_width = 50;
+                float progress = static_cast<float>(dlnow) / dltotal;
+                int pos = static_cast<int>(bar_width * progress);
+
+                cout << "\r[";
+                for (int i = 0; i < bar_width; ++i) {
+                    if (i < pos) cout << "=";
+                    else if (i == pos) cout << ">";
+                    else cout << " ";
+                }
+                cout << "] " << static_cast<int>(progress * 100.0) << "% "
+                    << dlnow/1024 << "KB/" << dltotal/1024 << "KB";
+                cout.flush();
+            }
+            return 0;
+        }
+
+        void update_progress_bar(curl_off_t dlnow, curl_off_t dltotal)
+        {
+            auto now = chrono::steady_clock::now();
+            if (now - last_progress_update < progress_update_interval)
+            {
+                return;
+            }
+            last_progress_update = now;
+
+            const int bar_width = 50;
+            float progress = static_cast<float>(dlnow) / dltotal;
+            int pos = static_cast<int>(bar_width * progress);
+
+            cout << "\r[";
+            for (int i = 0; i < bar_width; ++i) {
+                if (i < pos) cout << "=";
+                else if (i == pos) cout << ">";
+                else cout << " ";
+            }
+            cout << "] " << static_cast<int>(progress * 100.0) << "% "
+                << dlnow/1024 << "KB/" << dltotal/1024 << "KB";
+            cout.flush();
+        }
+
+        void finish_progress_bar()
+        {
+            if (verbose) {
+                cout << "\r" << string(100, ' ') << "\r"; // Clear line
+                cout.flush();
+            }
+        }
+
         // Helper to parse ISO 8601 dates (GitHub format)
         time_t parse_iso8601(const string& datetime_str)
         {
@@ -314,7 +375,8 @@ class AutoUpdater
         }
         
         // Helper function to initialize CURL
-        bool initCurl() {
+        bool initCurl()
+        {
             curl = curl_easy_init();
             if (!curl) {
                 if (verbose) cerr << "Failed to initialize CURL" << endl;
@@ -325,7 +387,8 @@ class AutoUpdater
         }
 
         // Helper function to clean up CURL
-        void cleanupCurl() {
+        void cleanupCurl()
+        {
             if (initialized) {
                 curl_easy_cleanup(curl);
                 initialized = false;
@@ -443,6 +506,14 @@ class AutoUpdater
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
             curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);  // Important for GitHub redirects
             curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);     // Fail on HTTP errors
+
+            // Add progress callback if verbose
+            if (verbose)
+            {
+                curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
+                curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
+                curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+            }
             
             log("Downloading update from: " + download_url);
             log("Saving to: " + file_path.string());

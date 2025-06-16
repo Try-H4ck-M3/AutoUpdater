@@ -4,8 +4,8 @@ using namespace std;
 
 int main()
 {
-    string repo_name = "byedpi";
-    string repo_author = "hufrea";
+    string repo_name = "astrofox";
+    string repo_author = "astrofox-io";
     string current_release_date = "2025-05-02";
     string asset_to_download = "byedpi-17-x86_64.tar.gz";
     bool verbose = true;
