@@ -1,8 +1,7 @@
 # AutoUpdater - Self-Updating C++ Library
 
-![GitHub](https://img.shields.io/badge/license-MIT-blue)
-![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
 ![C++](https://img.shields.io/badge/C++-17+-blue)
+![Platforms](https://img.shields.io/badge/Platforms-Windows%20%7C%20Linux%20%7C%20macOS-blue)
 
 A modern C++ library for seamless self-updating from GitHub releases with progress tracking and robust error handling.
 
