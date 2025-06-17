@@ -22,9 +22,15 @@
 #include <regex>
 #include <json/json.h>
 
+
+#define _CRT_SECURE_NO_WARNINGS
+
 #ifdef _WIN32
 #include <windows.h>
+#define localtime_r(now, result) localtime_s(result, now)
+#define timegm _mkgmtime
 #endif
+
 
 using namespace std;
 namespace fs = std::filesystem;
@@ -416,11 +422,15 @@ class AutoUpdater
         }
 
         // Helper to format time for logging
-        string format_time(time_t time)
-        {
-            tm* tm_info = gmtime(&time);
+        string format_time(time_t time) {
+            tm tm_info;
+            #ifdef _MSC_VER
+                gmtime_s(&tm_info, &time);
+            #else
+                tm_info = *gmtime(&time);
+            #endif
             char buffer[26];
-            strftime(buffer, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+            strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &tm_info);
             return string(buffer);
         }
         
@@ -546,12 +556,21 @@ class AutoUpdater
             // Create proper file path inside the temp directory
             fs::path file_path = fs::path(destination_dir) / asset_name;
             
+            # ifdef _WIN32
+            FILE* fp = nullptr;
+            if (fopen_s(&fp, file_path.string().c_str(), "wb") != 0 || !fp)
+            {
+                log("Failed to open file for writing: " + file_path.string());
+                return "";
+            }
+            #else
             FILE* fp = fopen(file_path.string().c_str(), "wb");
             if (!fp)
             {
                 log("Failed to open file for writing: " + file_path.string());
                 return "";
             }
+            #endif
             
             curl_easy_setopt(curl, CURLOPT_URL, download_url.c_str());
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, NULL);
@@ -610,7 +629,11 @@ class AutoUpdater
             
             // Convert to local time
             tm local_time;
-            localtime_r(&now_time, &local_time);  // Use localtime_s for Windows
+            #ifdef _WIN32
+            localtime_s(&local_time, &now_time);
+            #else
+            localtime_r(&now_time, &local_time);
+            #endif
             
             // Print timestamp and message
             cout << "AutoUpdater at " << put_time(&local_time, "%H:%M:%S") << ": " << log_string << endl;
