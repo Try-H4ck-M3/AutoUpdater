@@ -1,21 +1,29 @@
 #include "includes/AutoUpdater.cpp"
 
-using namespace std;
-
 int main()
 {
-    string repo_name = "astrofox";
-    string repo_author = "astrofox-io";
+    // AutoUpdater config
+    string repo_name = "MyApp"; 
+    string repo_author = "Author";
     string current_release_date = "2025-05-02";
-    string asset_to_download = "byedpi-17-x86_64.tar.gz";
+    string asset_to_download = "app_linux_x86_64";
     bool verbose = true;
 
+    // Initialize AutoUpdater
     AutoUpdater updater(repo_author, repo_name, current_release_date, asset_to_download, verbose);
 
+    cout << "Checking for updates..." << endl;
     if (updater.is_update_available())
     {
         cout << "Update available! Updating..." << endl;
-        updater.update();
+        if (updater.update())
+        {
+            cout << "Updated successfully!" << endl;
+        }
+        else
+        {
+            cout << "Error updating :(" << endl;
+        }
     }
     else
     {

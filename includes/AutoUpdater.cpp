@@ -1,3 +1,15 @@
+/*
+ * AutoUpdater - A class for checking and applying updates from GitHub releases
+ * 
+ * Features:
+ * - Checks GitHub releases for newer versions
+ * - Downloads update assets
+ * - Handles self-updating of the executable
+ * - Supports verbose logging
+ * - Cross-platform (Windows/Linux/macOS)
+ */
+
+
 #include <iostream>
 #include <string>
 #include <vector>
@@ -27,7 +39,15 @@ static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* use
 class AutoUpdater
 {
     public:
-        // Constructor now takes just a date string (YYYY-MM-DD)
+        /* 
+        * Constructor - Initializes the updater with repository info
+        * 
+        * @param github_repo_owner: Owner of the GitHub repository
+        * @param github_repo_name: Name of the GitHub repository
+        * @param current_release_date: Current version date (YYYY-MM-DD)
+        * @param asset_name: Name of the asset to download
+        * @param verbose: Enable detailed logging
+        */
         AutoUpdater(const string& github_repo_owner, 
                 const string& github_repo_name, 
                 const string& current_release_date,
@@ -48,9 +68,10 @@ class AutoUpdater
             log("Ready. Current release date: " + current_release_date);
         }
         
-        // Delete default constructor
+        // Prevent default construction
         AutoUpdater() = delete;
 
+        // Destructor - cleans up CURL resources
         ~AutoUpdater() {
             if (curl)
             {
@@ -58,6 +79,14 @@ class AutoUpdater
             }
         }
 
+        /*
+        * Main update function - applies updates
+        * 
+        * Workflow:
+        * 1. Downloads the update
+        * 2. Creates backup
+        * 3. Replaces executable
+        */
         bool update()
         {
             if (release_url.empty())
@@ -65,12 +94,16 @@ class AutoUpdater
                 log("Please run is_update_available() first");
                 return false;
             }
+
+            // Create temp directory for downloads
             string tmp_path = create_temp_directory();
             if (tmp_path.empty())
             {
                 log("Got empty tmp path");
                 return false;
             }
+
+            // Download the update file
             string downloaded_file = download_update(tmp_path, release_url);
             if (downloaded_file.empty())
             {
@@ -79,7 +112,7 @@ class AutoUpdater
                 return false;
             }
 
-            // Get current executable path
+            // Get current executable path (platform-specific)
             fs::path current_exe;
             try
             {
@@ -98,7 +131,7 @@ class AutoUpdater
                 #endif
             }
 
-            // Create backup of current executable
+            // Create backup before replacing
             fs::path backup_path = fs::path(tmp_path) / (current_exe.filename().string() + ".bak");
             try
             {
@@ -137,24 +170,18 @@ class AutoUpdater
                     log("Current executable size: " + to_string(orig_size) + " bytes");
                     log("Downloaded file size: " + to_string(tar_size) + " bytes");
 
-                    // Make the tar.gz world-readable
+                    // Make the correct file permissions
                     fs::permissions(downloaded_file, 
                                 fs::perms::owner_all | 
                                 fs::perms::group_read |
                                 fs::perms::others_read);
+
                     // Remove original executable
                     fs::remove(current_exe);
                     
-                    // Copy the tar.gz file to original executable's location
+                    // Copy the downloaded file to original executable's location
                     fs::copy(downloaded_file, current_exe);
-                    
-                    // Make it executable (won't actually work for a tar.gz)
-                    /*
-                    fs::permissions(current_exe, 
-                                fs::perms::owner_all | 
-                                fs::perms::group_read | fs::perms::group_exec |
-                                fs::perms::others_read | fs::perms::others_exec);
-                    */
+
                     // Verify after copy
                     auto new_size = fs::file_size(current_exe);
 
@@ -164,7 +191,8 @@ class AutoUpdater
                     }
                     else
                     {
-                        log("Replacement failed - size mismatch");
+                        log("Replacement failed - size mismatch. Restoring backup");
+                        fs::copy(backup_path, current_exe, fs::copy_options::overwrite_existing);
                     }
                 #endif
             }
@@ -194,7 +222,12 @@ class AutoUpdater
 
             return true;
         }
-    
+
+        /*
+        * Checks if a newer release is available on GitHub
+        * 
+        * Compares published dates and finds matching asset
+        */
         bool is_update_available()
         {
             log("Checking for updates");
@@ -202,11 +235,12 @@ class AutoUpdater
             {
                 return false;
             }
-            
+
+            // Get latest release info from GitHub API
             string url = "https://api.github.com/repos/" + github_repo_owner + "/" + github_repo_name + "/releases/latest";
-            // https://api.github.com/repos/owner/repo
             string response;
             
+            // Set curl options
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
@@ -220,7 +254,8 @@ class AutoUpdater
                 log(string("Curl failed: ") + curl_easy_strerror(res));
                 return false;
             }
-            
+
+            // Parse JSON response
             istringstream iss(response);
             Json::Value root;
             Json::CharReaderBuilder builder;
@@ -230,6 +265,14 @@ class AutoUpdater
             if (!parsingSuccessful)
             {
                 log("Failed to parse json from github api: " + errors);
+                log("Github API response: " + response);
+                return false;
+            }
+            
+            if (root.isMember("message") && root["message"].asString() == "Not Found")
+            {
+                log("Repository not found");
+                log("Github API response: " + response);
                 return false;
             }
 
@@ -237,6 +280,7 @@ class AutoUpdater
             if (!root.isMember("published_at"))
             {
                 log("No published_at field in response");
+                log("Github API response: " + response);
                 return false;
             }
 
@@ -244,7 +288,7 @@ class AutoUpdater
             string latest_full_date = root["published_at"].asString();
             string latest_date = latest_full_date.substr(0, 10);  // "2025-06-08"
 
-            // Simple string comparison works for YYYY-MM-DD format
+            // Compare dates
             bool is_newer = latest_date > current_release_date;
 
             auto [assets, tag_name, asset_ids] = parse_github_api_response(response);
@@ -254,10 +298,14 @@ class AutoUpdater
 
             log(string("Latest tag ") + tag_name);
             log("Assets:");
+
             // Print the results
-            for (const auto& [name, url] : assets)
+            if (verbose)
             {
-                cout << "    " << name << " (id: " << asset_ids[name] << ") => " << url << endl;
+                for (const auto& [name, url] : assets)
+                {
+                    cout << "    " << name << " (id: " << asset_ids[name] << ") => " << url << endl;
+                }
             }
 
             // Find the asset with the matching name
@@ -272,7 +320,6 @@ class AutoUpdater
                 return false;
             }
 
-            
             if (is_newer)
             {
                 log("Newer release available");
@@ -290,15 +337,18 @@ class AutoUpdater
         bool verbose;
         string release_url;
         bool initialized;
-        string current_release_date;  // Stored as "YYYY-MM-DD"
+        string current_release_date;
         string github_repo_owner;
         string github_repo_name;
         string asset_name;
 
+        // Progress tracking
         chrono::time_point<chrono::steady_clock> last_progress_update;
         static constexpr chrono::milliseconds progress_update_interval{100};
 
-        // Progress callback as a static member function
+        /*
+        * Progress callback for CURL - shows download progress bar
+        */
         static int progress_callback(void* clientp, 
                                 curl_off_t dltotal, 
                                 curl_off_t dlnow, 
@@ -312,7 +362,8 @@ class AutoUpdater
                 int pos = static_cast<int>(bar_width * progress);
 
                 cout << "\r[";
-                for (int i = 0; i < bar_width; ++i) {
+                for (int i = 0; i < bar_width; ++i)
+                {
                     if (i < pos) cout << "=";
                     else if (i == pos) cout << ">";
                     else cout << " ";
@@ -348,15 +399,14 @@ class AutoUpdater
             cout.flush();
         }
 
+        // Clear line
         void finish_progress_bar()
         {
-            if (verbose) {
-                cout << "\r" << string(100, ' ') << "\r"; // Clear line
-                cout.flush();
-            }
+            cout << "\r" << string(100, ' ') << "\r";
+            cout.flush();
         }
 
-        // Helper to parse ISO 8601 dates (GitHub format)
+        // Helper to parse ISO 8601 dates
         time_t parse_iso8601(const string& datetime_str)
         {
             tm tm = {};
@@ -374,11 +424,12 @@ class AutoUpdater
             return string(buffer);
         }
         
-        // Helper function to initialize CURL
+        // Helper to initialize CURL
         bool initCurl()
         {
             curl = curl_easy_init();
-            if (!curl) {
+            if (!curl)
+            {
                 if (verbose) cerr << "Failed to initialize CURL" << endl;
                 return false;
             }
@@ -389,7 +440,8 @@ class AutoUpdater
         // Helper function to clean up CURL
         void cleanupCurl()
         {
-            if (initialized) {
+            if (initialized)
+            {
                 curl_easy_cleanup(curl);
                 initialized = false;
             }
@@ -520,6 +572,11 @@ class AutoUpdater
             
             CURLcode res = curl_easy_perform(curl);
             fclose(fp);
+
+            if (verbose)
+            {
+                finish_progress_bar();
+            }
             
             if (res != CURLE_OK) {
                 log(string("Download failed: ") + curl_easy_strerror(res));
